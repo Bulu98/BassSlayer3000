@@ -16,6 +16,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 # Bot setup
 song_queues = {} # Guild ID: [list of song_item dictionaries]
 current_song_info = {} # Guild ID: song_item
+guild_audio_sources = {} # Guild ID: discord.PCMVolumeTransformer
 # song_item = {'title': str, 'source_url': str, 'requester': str}
 
 intents = discord.Intents.default()
@@ -44,26 +45,28 @@ async def play_next(ctx):
         voice_client = ctx.voice_client
         if voice_client and voice_client.is_connected():
             try:
-                audio_source = discord.FFmpegPCMAudio(source_url, **FFMPEG_OPTS)
-                voice_client.play(audio_source, after=lambda e: play_next_wrapper(ctx, e))
+                ffmpeg_audio = discord.FFmpegPCMAudio(source_url, **FFMPEG_OPTS)
+                audio_source_transformed = discord.PCMVolumeTransformer(ffmpeg_audio) # Default volume 1.0
+                voice_client.play(audio_source_transformed, after=lambda e: play_next_wrapper(ctx, e))
+                guild_audio_sources[guild_id] = audio_source_transformed
                 await ctx.send(f"Now playing: **{title}** (Requested by: {requester})")
             except Exception as e:
                 await ctx.send(f"Error playing next song '{title}': {e}")
-                current_song_info.pop(guild_id, None) # Clear current song on error
-                await play_next(ctx) # Attempt to play the next one
+                current_song_info.pop(guild_id, None)
+                if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
+                await play_next(ctx) 
         else:
-            # Bot might have been disconnected manually
-            if guild_id in song_queues: 
-                song_queues[guild_id].clear()
-            current_song_info.pop(guild_id, None) # Clear current song if bot disconnected
+            if guild_id in song_queues: song_queues[guild_id].clear()
+            current_song_info.pop(guild_id, None)
+            if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
     elif ctx.voice_client and ctx.voice_client.is_connected():
-        # No more songs in queue, or bot disconnected before starting next
         await ctx.send("Queue finished.")
-        current_song_info.pop(guild_id, None) # Clear current song info
-    else: # Bot not connected (e.g. was kicked, or !leave was used)
-        current_song_info.pop(guild_id, None) # Ensure current song is cleared
-        if guild_id in song_queues: # Also clear the queue for this guild
-            song_queues[guild_id].clear()
+        current_song_info.pop(guild_id, None)
+        if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
+    else: 
+        current_song_info.pop(guild_id, None)
+        if guild_id in song_queues: song_queues[guild_id].clear()
+        if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
 
 def play_next_wrapper(ctx, error):
     """
@@ -229,18 +232,22 @@ async def play(ctx, *, query: str):
         await ctx.send(f"Added to queue: **{title}** (Requested by: {ctx.author.name})")
     else:
         # Queue was empty and bot wasn't playing, so play directly
-        current_song_info[guild_id] = song_item # Store as current song
+        current_song_info[guild_id] = song_item 
         try:
             if voice_client.is_connected():
-                audio_source = discord.FFmpegPCMAudio(song_item['source_url'], **FFMPEG_OPTS)
-                voice_client.play(audio_source, after=lambda e: play_next_wrapper(ctx, e))
+                ffmpeg_audio = discord.FFmpegPCMAudio(song_item['source_url'], **FFMPEG_OPTS)
+                audio_source_transformed = discord.PCMVolumeTransformer(ffmpeg_audio) # Default volume 1.0
+                voice_client.play(audio_source_transformed, after=lambda e: play_next_wrapper(ctx, e))
+                guild_audio_sources[guild_id] = audio_source_transformed
                 await ctx.send(f"Now playing: **{title}** (Requested by: {ctx.author.name})")
             else:
                 await ctx.send("Bot is not connected to a voice channel anymore.")
-                current_song_info.pop(guild_id, None) # Clear if bot disconnected before playing
+                current_song_info.pop(guild_id, None)
+                if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
         except Exception as e:
             await ctx.send(f"Error starting playback: {e}")
-            current_song_info.pop(guild_id, None) # Clear on error
+            current_song_info.pop(guild_id, None)
+            if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
 
 
 @bot.command(name="pause")
@@ -285,17 +292,22 @@ async def stop(ctx):
             voice_client.stop() # This will trigger the 'after' callback.
                                 # play_next will then clear current_song_info if queue is empty.
         
-        # Clear the queue for this guild when !stop is called
         if guild_id in song_queues:
             song_queues[guild_id].clear()
             await ctx.send("Queue cleared.")
-        
-        current_song_info.pop(guild_id, None) # Explicitly clear current song info on stop
+        current_song_info.pop(guild_id, None) 
+        if guild_id in guild_audio_sources: # Clear audio source on stop
+            del guild_audio_sources[guild_id]
 
         await voice_client.disconnect()
         await ctx.send("Disconnected from the voice channel.")
     else:
         await ctx.send("I am not connected to a voice channel.")
+        # Ensure cleanup if stop is called when not connected but data might exist
+        guild_id = ctx.guild.id # Get guild_id for cleanup
+        if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
+        if guild_id in current_song_info: del current_song_info[guild_id]
+        if guild_id in song_queues: song_queues[guild_id].clear()
 
 @bot.command(name="skip") # Added for completeness from previous task, ensure it works with current_song_info
 async def skip(ctx):
@@ -369,6 +381,50 @@ async def nowplaying(ctx):
         if guild_id in current_song_info and not (voice_client and (voice_client.is_playing() or voice_client.is_paused())):
              current_song_info.pop(guild_id, None)
         await ctx.send("Nothing is currently playing.")
+
+@bot.command(name="volume")
+async def volume(ctx, level: str = None):
+    """Adjusts the playback volume or displays current volume.
+    Usage: !volume (shows current) or !volume <0-200> (sets volume)
+    """
+    if ctx.author == bot.user:
+        return
+
+    guild_id = ctx.guild.id
+    voice_client = ctx.voice_client
+
+    if not (voice_client and voice_client.is_connected() and voice_client.source):
+        await ctx.send("Not currently playing anything or volume is not adjustable.")
+        return
+
+    audio_source = guild_audio_sources.get(guild_id)
+
+    if not isinstance(audio_source, discord.PCMVolumeTransformer):
+        await ctx.send("Volume is not adjustable for the current audio source.")
+        # This might also indicate an issue if guild_audio_sources[guild_id] was not set correctly
+        if guild_id in guild_audio_sources: # Clean up if it's an invalid source
+            del guild_audio_sources[guild_id]
+        return
+
+    if level is None:
+        # Display current volume
+        current_volume_percentage = int(audio_source.volume * 100)
+        await ctx.send(f"Current volume is: {current_volume_percentage}%")
+    else:
+        # Set volume
+        try:
+            volume_value = int(level)
+            if 0 <= volume_value <= 200:
+                audio_source.volume = volume_value / 100.0
+                await ctx.send(f"Volume set to {volume_value}%.")
+            else:
+                await ctx.send("Volume must be between 0 and 200.")
+        except ValueError:
+            await ctx.send("Invalid volume level. Please use a number between 0 and 200.")
+        except Exception as e:
+            await ctx.send(f"An error occurred while setting volume: {e}")
+            print(f"Error in volume command: {e}")
+
 
 # Run the bot
 if __name__ == "__main__":
