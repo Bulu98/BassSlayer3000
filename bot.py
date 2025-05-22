@@ -124,17 +124,20 @@ YDL_OPTS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'auto',
-    'quiet': True,
-    'extract_flat': False, # Changed to False to get direct stream URL for single videos
-    # 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', # Not needed for streaming
-    # 'restrictfilenames': True, # Not needed for streaming
-    # 'nooverwrites': True, # Not needed for streaming
-    # 'nocheckcertificate': True, # Potentially useful for some networks
-    # 'ignoreerrors': False, # We want to handle errors
-    # 'logtostderr': False, # We handle logging
-    # 'keepvideo': False, # Not needed for streaming
-    # 'skip_download': True, # Implied by download=False in extract_info
-    # 'postprocessors': [{ # This is for downloading, not streaming directly
+    'quiet': False, # Set to False if verbose is True, otherwise verbose messages might be suppressed
+    'verbose': True, # For more detailed output from yt-dlp for debugging
+    'source_address': '0.0.0.0', # Helps in some network configurations
+    'cookiefile': os.getenv('YOUTUBE_COOKIE_FILE', None), # Allows specifying a cookie file
+    'extract_flat': False, 
+    # 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 
+    # 'restrictfilenames': True, 
+    # 'nooverwrites': True, 
+    # 'nocheckcertificate': True, 
+    # 'ignoreerrors': False, 
+    # 'logtostderr': False, 
+    # 'keepvideo': False, 
+    # 'skip_download': True, 
+    # 'postprocessors': [{ 
     #     'key': 'FFmpegExtractAudio',
     #     'preferredcodec': 'mp3',
     #     'preferredquality': '192',
