@@ -14,6 +14,7 @@ A self-hosted Discord music bot that plays audio from YouTube. Manage playback w
 *   **`!skip`**: Skips the currently playing song and plays the next song in the queue (if any).
 *   **`!queue` (`!q`)**: Displays the list of songs currently in the queue, including the song that is now playing.
 *   **`!nowplaying` (`!np`)**: Shows detailed information about the song that is currently playing.
+*   **`!volume [level]`**: Adjusts the playback volume (0-200%). If no level is provided, displays the current volume. Example: `!volume 75`
 
 ## Setup Instructions
 
