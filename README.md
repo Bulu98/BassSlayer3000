@@ -176,6 +176,7 @@ The Opus audio codec is required by `discord.py` for voice communication. While 
     ```
     *   `DISCORD_TOKEN`: **Required.** Your bot's unique token.
     *   `YOUTUBE_COOKIE_FILE`: **Optional.** The absolute path to a text file containing YouTube cookies in Netscape HTTP Cookie File format. This can help `yt-dlp` access age-restricted content or content that requires a login. See the "Advanced Configuration" section for more details.
+    *   `SPOTIPY_CLIENT_ID` / `SPOTIPY_CLIENT_SECRET`: **Optional.** Needed if you want to enable Spotify link playback (which searches for the songs on YouTube). See "Getting Spotify API Credentials" below.
 
 3.  **How to get a Discord Bot Token:**
     *   Go to the [Discord Developer Portal](https://discord.com/developers/applications).
@@ -187,6 +188,26 @@ The Opus audio codec is required by `discord.py` for voice communication. While 
     *   **Enable Privileged Gateway Intents:** On the same "Bot" page, scroll down to "Privileged Gateway Intents".
         *   Enable **MESSAGE CONTENT INTENT**.
         *   The bot also relies on voice state changes, which are covered by default intents, but ensure no specific guild intent restrictions are blocking it. `GUILD_VOICE_STATES` is essential.
+
+4.  **Getting Spotify API Credentials (Optional):**
+    If you want the bot to be able to parse Spotify track, album, and playlist URLs (it will then search for these songs on YouTube), you'll need Spotify API credentials.
+    *   **Go to the Spotify Developer Dashboard:** [https://developer.spotify.com/dashboard/](https://developer.spotify.com/dashboard/)
+    *   **Log in** with your Spotify account or create one.
+    *   Click on "**Create an App**" (or "Create App").
+        *   Give your application a **Name** (e.g., "MyDiscordBot") and a brief **Description**.
+        *   Agree to the terms.
+    *   Once created, you'll see your app's dashboard. Note down the **Client ID** and **Client Secret** (you might need to click "Show Client Secret").
+    *   **Set a Redirect URI:** Even if not strictly used by the client credentials flow, it's good practice to set one.
+        *   Go to your App's settings (usually "Edit Settings" or similar).
+        *   In the "Redirect URIs" field, add `http://localhost:8888/callback`.
+        *   Click "Save".
+    *   **Add to `.env` file:**
+        Open your `.env` file and add/update the following lines with the credentials you obtained:
+        ```env
+        SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
+        SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
+        ```
+    If these credentials are not provided or are incorrect, Spotify link processing will be disabled.
 
 ## Running the Bot
 
