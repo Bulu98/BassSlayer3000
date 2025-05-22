@@ -19,11 +19,82 @@ A self-hosted Discord music bot that plays audio from YouTube. Manage playback w
 
 ### Prerequisites
 
-*   **Python 3.8+**: Download from [python.org](https://www.python.org/downloads/).
-*   **`pip`**: Usually comes with Python. If not, see [installing pip](https://pip.pypa.io/en/stable/installation/).
-*   **`ffmpeg`**: Required for audio playback.
-    *   Download from [ffmpeg.org](https://ffmpeg.org/download.html).
-    *   Ensure `ffmpeg` (and `ffprobe`) is installed and accessible in your system's PATH environment variable. You can test this by typing `ffmpeg -version` in your command prompt or terminal.
+### Python and Pip
+Python 3.8 or newer is required. Pip (Python package installer) and venv (for virtual environments) are also necessary.
+
+*   **For Debian/Ubuntu:**
+    Python 3 is usually pre-installed. You can install pip and venv with:
+    ```bash
+    sudo apt update && sudo apt install python3-pip python3-venv
+    ```
+    Verify installation: `python3 --version && pip3 --version`
+
+*   **For Fedora:**
+    Python 3 is usually pre-installed. You can install pip and venv (if not included with python3) with:
+    ```bash
+    sudo dnf install python3-pip python3-venv
+    ```
+    (If `python3-venv` is not found, venv might be included with your `python3` package or available via a differently named package like `python3-virtualenv`. Check your distribution's repositories if needed.)
+    Verify installation: `python3 --version && pip3 --version`
+
+*   **For Arch Linux:**
+    ```bash
+    sudo pacman -S python python-pip python-virtualenv
+    ```
+    Verify installation: `python --version && pip --version`
+
+*   **For macOS:**
+    Python 3 might be pre-installed. If not, or to get the latest version:
+    *   **Using Homebrew (recommended):**
+        ```bash
+        brew install python
+        ```
+        This typically installs Python 3, pip, and sets up venv.
+    *   **Official Installer:** Download from the [official Python website](https://www.python.org/downloads/mac-osx/).
+    Verify installation (might be `python3` and `pip3` or `python` and `pip` depending on Homebrew setup): `python3 --version && pip3 --version`
+
+*   **For Windows:**
+    *   **Official Installer (recommended):** Download the latest Python 3 installer from the [official Python website](https://www.python.org/downloads/windows/).
+        *   **Important:** During installation, make sure to check the box that says "Add Python to PATH".
+        *   Pip and venv are usually included with the Python installer.
+    *   **Using Chocolatey:**
+        ```powershell
+        choco install python
+        ```
+        This will install the latest Python 3 and add it to PATH. Pip should be included.
+    Verify installation: `python --version && pip --version`
+
+### FFmpeg
+FFmpeg is required for audio processing. It must be installed and accessible in your system's PATH.
+
+*   **For Debian/Ubuntu:**
+    ```bash
+    sudo apt update && sudo apt install ffmpeg
+    ```
+*   **For Fedora:**
+    ```bash
+    sudo dnf install ffmpeg
+    ```
+    (Note: You might need to enable RPM Fusion repository first if ffmpeg is not found in default repos).
+*   **For Arch Linux:**
+    ```bash
+    sudo pacman -S ffmpeg
+    ```
+*   **For macOS (using Homebrew):**
+    ```bash
+    brew install ffmpeg
+    ```
+*   **For Windows:**
+    *   **Using Chocolatey (recommended):**
+        ```powershell
+        choco install ffmpeg
+        ```
+    *   **Manual Installation:** Download from the [official FFmpeg website](https://ffmpeg.org/download.html) (e.g., the gyan.dev or BtbN builds are often recommended for Windows). After downloading, you need to add the `bin` directory (which contains `ffmpeg.exe`) to your system's PATH environment variable.
+*   **Verify FFmpeg Installation:**
+    You can test your FFmpeg installation by typing the following command in your terminal or command prompt:
+    ```bash
+    ffmpeg -version
+    ```
 
 ### Installation
 
