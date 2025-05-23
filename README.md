@@ -28,31 +28,14 @@ This guide focuses on setup for **Debian/Ubuntu** Linux distributions.
 Python 3.8 or newer is required. Pip (Python package installer) and venv (for virtual environments) are also necessary.
 
 *   **For Debian/Ubuntu:**
-    Python 3 is usually pre-installed. You can install pip and venv with:
+    Python 3 is usually pre-installed. The following command will install or update `python3` itself, `pip`, `venv` (for virtual environments), `ffmpeg` (for audio processing), `libopus0` and `libopus-dev` (for the Opus audio codec), and `libsodium-dev` (for PyNaCl, used for voice encryption):
     ```bash
-    sudo apt update && sudo apt install python3-pip python3-venv
+    sudo apt update && sudo apt install python3 python3-pip python3-venv ffmpeg libopus0 libopus-dev libsodium-dev
     ```
-    Verify installation: `python3 --version && pip3 --version`
+    The `libsodium-dev` package helps in the installation of `PyNaCl`, which is required for voice functionality and will be installed when you run `pip install -r requirements.txt`.
 
-#### FFmpeg
-FFmpeg is required for audio processing. It must be installed and accessible in your system's PATH.
-
-*   **For Debian/Ubuntu:**
-    ```bash
-    sudo apt update && sudo apt install ffmpeg
-    ```
-    Verify FFmpeg Installation:
-    ```bash
-    ffmpeg -version
-    ```
-
-#### Opus Audio Codec
-The Opus audio codec is required by `discord.py` for voice communication.
-
-*   **For Debian/Ubuntu:**
-    ```bash
-    sudo apt update && sudo apt install libopus0 libopus-dev
-    ```
+    Verify Python and Pip: `python3 --version && pip3 --version`
+    Verify FFmpeg: `ffmpeg -version`
 
 ### Installation
 
