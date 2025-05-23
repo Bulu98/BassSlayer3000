@@ -11,6 +11,7 @@ import asyncio # Required for play_next_wrapper
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import re # For URL detection
+import random # For shuffling queue
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -26,6 +27,25 @@ def format_duration(duration_seconds):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     else:
         return f"{minutes:02d}:{seconds:02d}"
+
+# Custom Check Function
+async def user_in_same_voice_channel(ctx):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        embed = discord.Embed(description="You need to be in a voice channel to use this command.", color=discord.Color.red())
+        await ctx.send(embed=embed, delete_after=10)
+        raise commands.CheckFailure("User not in a voice channel.")
+    
+    if not ctx.voice_client or not ctx.voice_client.is_connected():
+        embed = discord.Embed(description="I am not currently in a voice channel.", color=discord.Color.red())
+        await ctx.send(embed=embed, delete_after=10)
+        raise commands.CheckFailure("Bot not in a voice channel.")
+    
+    if ctx.author.voice.channel != ctx.voice_client.channel:
+        embed = discord.Embed(description="You must be in the same voice channel as me to use this command.", color=discord.Color.red())
+        await ctx.send(embed=embed, delete_after=10)
+        raise commands.CheckFailure("User not in the same voice channel as bot.")
+    
+    return True # If all checks pass
 
 # Spotipy client setup
 SPOTIPY_CLIENT_ID = os.getenv('SPOTIPY_CLIENT_ID')
@@ -47,7 +67,15 @@ else:
 song_queues = {} # Guild ID: [list of song_item dictionaries]
 current_song_info = {} # Guild ID: song_item
 guild_audio_sources = {} # Guild ID: discord.PCMVolumeTransformer
-# song_item = {'title': str, 'source_url': str, 'requester': str}
+active_control_messages = {} # Guild ID: discord.Message object for current playback controls
+guild_loop_states = {} # Guild ID: 'off' or 'song' (or 'queue' in future)
+
+# song_item structure (for reference):
+# {
+# 'query': str, 'source_type': str, 'title': str, 'webpage_url': str, 
+# 'thumbnail_url': str, 'duration': int, 'uploader': str, 
+# 'stream_url': str, 'requester': str, 'requester_avatar_url': str
+# }
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -98,7 +126,29 @@ async def play_next(ctx):
 
                 embed.add_field(name="Source", value=source_display, inline=True)
                 
-                await ctx.send(embed=embed)
+                # Manage active control messages
+                if guild_id in active_control_messages and active_control_messages[guild_id]:
+                    try:
+                        old_message = active_control_messages[guild_id]
+                        # Create a new view with all buttons disabled for the old message
+                        disabled_view = PlaybackControlView()
+                        for child in disabled_view.children:
+                            child.disabled = True
+                        await old_message.edit(view=disabled_view)
+                    except discord.NotFound:
+                        pass # Old message might have been deleted
+                    except Exception as ex:
+                        print(f"Error editing old control message: {ex}")
+                
+                view = PlaybackControlView()
+                # We need a way to update button states correctly here.
+                # For now, buttons will have default states. Pause/Resume handles itself on click.
+                # Skip/Stop might be enabled even if queue is empty after this song.
+                # This will be improved by view.update_button_states in a follow-up if needed.
+                
+                new_message = await ctx.send(embed=embed, view=view)
+                active_control_messages[guild_id] = new_message
+                # await view.update_button_states(ctx) # Requires passing ctx or interaction to view or this method
 
             except Exception as e:
                 await ctx.send(f"Error playing next song '{song_item['title']}': {e}")
@@ -113,10 +163,38 @@ async def play_next(ctx):
         await ctx.send("Queue finished.")
         current_song_info.pop(guild_id, None)
         if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
-    else: 
+        # If queue finishes, disable controls on the last message
+        if guild_id in active_control_messages and active_control_messages[guild_id]:
+            try:
+                last_message = active_control_messages.pop(guild_id)
+                if last_message: # Check if it wasn't already None
+                    # Create a new view with all buttons disabled for the old message
+                    disabled_view = PlaybackControlView()
+                    for child in disabled_view.children:
+                        child.disabled = True
+                    await last_message.edit(view=disabled_view)
+            except discord.NotFound:
+                pass # Old message might have been deleted
+            except Exception as ex:
+                print(f"Error editing old control message on queue end: {ex}")
+
+    else: # Bot not connected, or some other case where playback stops
         current_song_info.pop(guild_id, None)
         if guild_id in song_queues: song_queues[guild_id].clear()
         if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
+        # Also try to disable controls if bot is not connected anymore
+        if guild_id in active_control_messages and active_control_messages[guild_id]:
+            try:
+                last_message = active_control_messages.pop(guild_id)
+                if last_message:
+                    disabled_view = PlaybackControlView()
+                    for child in disabled_view.children:
+                        child.disabled = True
+                    await last_message.edit(view=disabled_view)
+            except discord.NotFound:
+                pass
+            except Exception as ex:
+                print(f"Error editing old control message on disconnect: {ex}")
 
 def play_next_wrapper(ctx, error):
     """
@@ -132,7 +210,29 @@ def play_next_wrapper(ctx, error):
     # Schedule play_next to run.
     # If there was an error, play_next might decide to skip or retry.
     # If no error, it proceeds to the next song or announces queue end.
-    return asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+
+    guild_id = ctx.guild.id # Assuming ctx.guild is available
+    loop_mode = guild_loop_states.get(guild_id, 'off')
+
+    if loop_mode == 'song' and error is None:
+        current_song = current_song_info.get(guild_id) # Get the song that just finished
+        if current_song:
+            # Ensure queue exists for the guild
+            if guild_id not in song_queues:
+                song_queues[guild_id] = []
+            # Add the just-finished song to the beginning of the queue
+            # Use .copy() to ensure modifications to the item (if any later) don't affect the original
+            song_queues[guild_id].insert(0, current_song.copy()) 
+            # No need to send a message here, play_next will play it and announce
+    
+    # elif loop_mode == 'queue' and error is None: # Placeholder for future queue loop
+    #     current_song = current_song_info.get(guild_id)
+    #     if current_song:
+    #         if guild_id not in song_queues:
+    #             song_queues[guild_id] = []
+    #         song_queues[guild_id].append(current_song.copy()) # Add to the end for queue loop
+
+    asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
 
 
 @bot.command(name="ping")
@@ -516,7 +616,25 @@ async def play(ctx, *, query: str):
                         if song_item.get('source_type') == 'youtube' and 'ytsearch' in song_item.get('query','').lower():
                              source_display = 'Search (YouTube)'
                         embed.add_field(name="Source", value=source_display, inline=True)
-                        await ctx.send(embed=embed)
+                        
+                        # Manage active control messages for direct play
+                        if guild_id in active_control_messages and active_control_messages[guild_id]:
+                            try:
+                                old_message = active_control_messages[guild_id]
+                                disabled_view = PlaybackControlView()
+                                for child_button in disabled_view.children: # Renamed to avoid conflict
+                                    child_button.disabled = True
+                                await old_message.edit(view=disabled_view)
+                            except discord.NotFound:
+                                pass
+                            except Exception as ex:
+                                print(f"Error editing old control message (direct play): {ex}")
+
+                        view = PlaybackControlView()
+                        new_message = await ctx.send(embed=embed, view=view)
+                        active_control_messages[guild_id] = new_message
+                        # await view.update_button_states(ctx) # Needs adjustment
+
                     else:
                         await ctx.send("Bot is not connected to a voice channel anymore.")
                         current_song_info.pop(guild_id, None)
@@ -548,45 +666,45 @@ async def play(ctx, *, query: str):
 
 
 @bot.command(name="pause")
+@commands.check(user_in_same_voice_channel)
 async def pause(ctx):
     """Pauses the currently playing audio."""
-    if ctx.author == bot.user:
+    if ctx.author == bot.user: # Still useful to prevent self-action if bot could use commands
         return
-    voice_client = ctx.voice_client
-    if voice_client and voice_client.is_connected():
-        if voice_client.is_playing():
-            voice_client.pause()
-            await ctx.send("Playback paused.")
-        else:
-            await ctx.send("I am not playing anything right now.")
+    
+    voice_client = ctx.voice_client # Check ensures voice_client exists and is connected
+    if voice_client.is_playing():
+        voice_client.pause()
+        await ctx.send(embed=discord.Embed(description="Playback paused.", color=discord.Color.blue()))
     else:
-        await ctx.send("I am not connected to a voice channel.")
+        await ctx.send(embed=discord.Embed(description="I am not playing anything right now.", color=discord.Color.orange()))
 
 @bot.command(name="resume")
+@commands.check(user_in_same_voice_channel)
 async def resume(ctx):
     """Resumes the paused audio."""
     if ctx.author == bot.user:
         return
-    voice_client = ctx.voice_client
-    if voice_client and voice_client.is_connected():
-        if voice_client.is_paused():
-            voice_client.resume()
-            await ctx.send("Playback resumed.")
-        else:
-            await ctx.send("Playback is not paused.")
+        
+    voice_client = ctx.voice_client # Check ensures voice_client exists and is connected
+    if voice_client.is_paused():
+        voice_client.resume()
+        await ctx.send(embed=discord.Embed(description="Playback resumed.", color=discord.Color.blue()))
     else:
-        await ctx.send("I am not connected to a voice channel.")
+        await ctx.send(embed=discord.Embed(description="Playback is not paused.", color=discord.Color.orange()))
 
 @bot.command(name="stop")
+@commands.check(user_in_same_voice_channel) # Applying check, user must be in channel to stop.
 async def stop(ctx):
     """Stops audio playback and disconnects the bot from the voice channel."""
     if ctx.author == bot.user:
         return
-    voice_client = ctx.voice_client
-    if voice_client and voice_client.is_connected():
-        guild_id = ctx.guild.id # Ensure guild_id is defined
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop() # This will trigger the 'after' callback.
+    
+    voice_client = ctx.voice_client # Check ensures voice_client exists and is connected
+    guild_id = ctx.guild.id
+    
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop() # This will trigger the 'after' callback.
                                 # play_next will then clear current_song_info if queue is empty.
         
         if guild_id in song_queues:
@@ -601,33 +719,49 @@ async def stop(ctx):
     else:
         await ctx.send("I am not connected to a voice channel.")
         # Ensure cleanup if stop is called when not connected but data might exist
-        guild_id = ctx.guild.id # Get guild_id for cleanup
+        guild_id = ctx.guild.id 
         if guild_id in guild_audio_sources: del guild_audio_sources[guild_id]
         if guild_id in current_song_info: del current_song_info[guild_id]
-        if guild_id in song_queues: song_queues[guild_id].clear()
+        if guild_id in song_queues: song_queues[guild_id].clear() # Also clear queue on stop
+        
+        if guild_id in active_control_messages and active_control_messages[guild_id]:
+            try:
+                old_message = active_control_messages.pop(guild_id)
+                if old_message:
+                    disabled_view = PlaybackControlView()
+                    for child_button_view in disabled_view.children: # Renamed variable
+                        child_button_view.disabled = True
+                    await old_message.edit(view=disabled_view)
+            except discord.NotFound:
+                pass
+            except Exception as ex:
+                print(f"Error editing old control message on stop (not connected scenario): {ex}")
 
-@bot.command(name="skip") # Added for completeness from previous task, ensure it works with current_song_info
+
+@bot.command(name="skip")
+@commands.check(user_in_same_voice_channel)
 async def skip(ctx):
     """Skips the current song."""
     if ctx.author == bot.user:
         return
-    voice_client = ctx.voice_client
-    guild_id = ctx.guild.id
-    if voice_client and voice_client.is_connected():
-        if voice_client.is_playing() or voice_client.is_paused():
-            await ctx.send("Skipping current song...")
-            # current_song_info will be updated by play_next via the 'after' callback
-            voice_client.stop() 
-        else:
-            await ctx.send("Not playing anything to skip.")
-            current_song_info.pop(guild_id, None) # Ensure cleared if nothing was playing
-    else:
-        await ctx.send("I am not connected to a voice channel.")
-        current_song_info.pop(guild_id, None) # Ensure cleared if not connected
+        
+    voice_client = ctx.voice_client # Check ensures voice_client exists and is connected
+    # guild_id = ctx.guild.id # No longer needed here directly for current_song_info pop
 
-@bot.command(name="queue", aliases=["q"]) # Added for completeness
+    if voice_client.is_playing() or voice_client.is_paused():
+        # Send simple text message as ephemeral, or a small embed
+        await ctx.send(embed=discord.Embed(description="Skipping current song...", color=discord.Color.blue()), delete_after=5)
+        voice_client.stop()  # Triggers play_next via 'after' callback, which handles current_song_info
+    else:
+        # This case should ideally be less frequent if button is disabled, but good for direct command use
+        await ctx.send(embed=discord.Embed(description="Not playing anything to skip.", color=discord.Color.orange()))
+
+
+@bot.command(name="queue", aliases=["q"])
 async def queue_command(ctx):
     """Displays the current song queue."""
+    # This command does not require the user to be in the same voice channel,
+    # nor does it require the bot to be in a voice channel. It just shows information.
     if ctx.author == bot.user:
         return
     guild_id = ctx.guild.id
@@ -745,6 +879,67 @@ async def nowplaying(ctx):
         embed = discord.Embed(description="Nothing is currently playing.", color=discord.Color.orange())
         await ctx.send(embed=embed)
 
+@bot.command(name="shuffle")
+async def shuffle(ctx):
+    """Shuffles the current song queue."""
+    if ctx.author == bot.user:
+        return
+
+    guild_id = ctx.guild.id
+    if guild_id in song_queues and song_queues[guild_id]:
+        queue = song_queues[guild_id]
+        random.shuffle(queue)
+        
+        embed = discord.Embed(
+            title="Queue Shuffled",
+            description="The song queue has been randomized.",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="Queue Empty",
+            description="The queue is currently empty, nothing to shuffle.",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+
+@bot.command(name="loop")
+async def loop(ctx, mode: str = None):
+    """Sets or shows the current loop mode. Modes: off, song."""
+    if ctx.author == bot.user:
+        return
+
+    guild_id = ctx.guild.id
+    current_loop_mode = guild_loop_states.get(guild_id, 'off') # Check ensures voice_client exists
+
+    if mode is None:
+        embed = discord.Embed(
+            title="Loop Status",
+            description=f"Current loop mode: **{current_loop_mode.capitalize()}**",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+    elif mode.lower() == 'off':
+        guild_loop_states[guild_id] = 'off'
+        embed = discord.Embed(description="Looping turned **off**.", color=discord.Color.green())
+        await ctx.send(embed=embed)
+    elif mode.lower() == 'song':
+        guild_loop_states[guild_id] = 'song'
+        embed = discord.Embed(description="Looping current **song**.", color=discord.Color.green())
+        await ctx.send(embed=embed)
+    # Placeholder for 'queue' mode in a future task
+    # elif mode.lower() == 'queue':
+    #     guild_loop_states[guild_id] = 'queue'
+    #     embed = discord.Embed(description="Looping current **queue**.", color=discord.Color.green())
+    #     await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            description="Invalid loop mode. Available modes: `off`, `song`.", # Add `queue` when implemented
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+
 @bot.command(name="volume")
 async def volume(ctx, level: str = None):
     """Adjusts the playback volume or displays current volume.
@@ -754,13 +949,17 @@ async def volume(ctx, level: str = None):
         return
 
     guild_id = ctx.guild.id
-    voice_client = ctx.voice_client
+    voice_client = ctx.voice_client # Check ensures voice_client exists and is connected
+    audio_source = guild_audio_sources.get(guild_id) # Check ensures voice_client.source exists via the bot connected check
 
-    if not (voice_client and voice_client.is_connected() and voice_client.source):
-        await ctx.send("Not currently playing anything or volume is not adjustable.")
+    # The main check `user_in_same_voice_channel` already confirms:
+    # 1. User is in a voice channel.
+    # 2. Bot is in a voice channel.
+    # 3. User and Bot are in the same channel.
+    # We still need to check if voice_client.source exists for volume adjustment.
+    if not voice_client.source:
+        await ctx.send(embed=discord.Embed(description="Not currently playing anything.", color=discord.Color.orange()))
         return
-
-    audio_source = guild_audio_sources.get(guild_id)
 
     if not isinstance(audio_source, discord.PCMVolumeTransformer):
         await ctx.send("Volume is not adjustable for the current audio source.")
@@ -795,3 +994,108 @@ if __name__ == "__main__":
         bot.run(DISCORD_TOKEN)
     else:
         print("Error: DISCORD_TOKEN not found in .env file.")
+
+# Playback Control View
+class PlaybackControlView(discord.ui.View):
+    def __init__(self, *, timeout=None): # Defaulting to None for persistent view
+        super().__init__(timeout=timeout)
+
+    async def update_button_states(self, interaction: discord.Interaction):
+        """Updates the pause/resume button based on current playback state."""
+        voice_client = interaction.guild.voice_client
+        pause_resume_button = next((child for child in self.children if child.custom_id == "pause_resume_button"), None)
+        
+        if pause_resume_button:
+            if voice_client and voice_client.is_playing():
+                pause_resume_button.label = "Pause"
+                pause_resume_button.emoji = "⏸️"
+            elif voice_client and voice_client.is_paused():
+                pause_resume_button.label = "Resume"
+                pause_resume_button.emoji = "▶️"
+            else: # Not playing or paused (e.g., stopped, or finished)
+                pause_resume_button.label = "Pause" # Default to Pause
+                pause_resume_button.emoji = "⏸️"
+                pause_resume_button.disabled = True # Disable if not playing/paused
+
+        # Potentially disable skip/stop if not relevant
+        skip_button = next((child for child in self.children if child.custom_id == "skip_button"), None)
+        stop_button = next((child for child in self.children if child.custom_id == "stop_button"), None)
+
+        if not (voice_client and (voice_client.is_playing() or voice_client.is_paused())):
+            if skip_button: skip_button.disabled = True
+            # Stop button might still be relevant to disconnect if connected but not playing
+            if stop_button and not voice_client.is_connected(): stop_button.disabled = True
+        else:
+            if skip_button: skip_button.disabled = False
+            if stop_button: stop_button.disabled = False
+
+
+    @discord.ui.button(label="Pause", style=discord.ButtonStyle.primary, emoji="⏸️", custom_id="pause_resume_button", row=0)
+    async def pause_resume_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        
+        if voice_client and voice_client.is_playing():
+            voice_client.pause()
+            button.label = "Resume"
+            button.emoji = "▶️"
+            await interaction.response.edit_message(view=self)
+        elif voice_client and voice_client.is_paused():
+            voice_client.resume()
+            button.label = "Pause"
+            button.emoji = "⏸️"
+            await interaction.response.edit_message(view=self)
+        else:
+            await interaction.response.send_message("Not playing anything to pause/resume.", ephemeral=True)
+            button.disabled = True # Disable if state is unexpected
+            await interaction.edit_original_response(view=self)
+
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️", custom_id="skip_button", row=0)
+    async def skip_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        guild_id = interaction.guild.id
+
+        if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
+            await interaction.response.send_message("Skipping to the next song...", ephemeral=True)
+            voice_client.stop() # Triggers play_next via 'after' callback
+            # play_next will handle new message with its own view or disable if queue empty
+        else:
+            await interaction.response.send_message("Nothing to skip.", ephemeral=True)
+            button.disabled = True
+            await interaction.edit_original_response(view=self)
+
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="⏹️", custom_id="stop_button", row=0)
+    async def stop_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        guild_id = interaction.guild.id
+
+        if voice_client and voice_client.is_connected():
+            if guild_id in song_queues:
+                song_queues[guild_id].clear()
+            current_song_info.pop(guild_id, None)
+            if guild_id in guild_audio_sources:
+                del guild_audio_sources[guild_id]
+            
+            if voice_client.is_playing() or voice_client.is_paused():
+                voice_client.stop()
+            
+            await voice_client.disconnect()
+            await interaction.response.send_message("Playback stopped and bot disconnected.", ephemeral=True)
+
+            # Disable all buttons on this view
+            for child_button in self.children:
+                child_button.disabled = True
+            if interaction.message: # Ensure message exists before trying to edit
+                 await interaction.message.edit(view=self)
+            self.stop() # Stop the view itself (removes from listening)
+            
+            # Clear this message from active_control_messages if it's the one
+            if active_control_messages.get(guild_id) == interaction.message:
+                active_control_messages.pop(guild_id, None)
+        else:
+            await interaction.response.send_message("Not connected to a voice channel.", ephemeral=True)
+            button.disabled = True
+            if interaction.message:
+                await interaction.message.edit(view=self)
+            self.stop() # Also stop view if bot wasn't connected
