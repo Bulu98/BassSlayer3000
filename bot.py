@@ -303,35 +303,8 @@ FFMPEG_OPTS = {
     'options': '-vn',
 }
 
-
-@bot.command(name="play")
-async def play(ctx, *, query: str):
-    """Plays audio from YouTube (URL or search query)."""
-    if ctx.author == bot.user:
-        return
-
-    # 1. Voice Channel Logic
-    if not ctx.author.voice:
-        await ctx.send("You need to be in a voice channel to use this command.")
-        return
-
-    user_voice_channel = ctx.author.voice.channel
-    voice_client = ctx.voice_client
-
-    if voice_client:
-        if voice_client.channel != user_voice_channel:
-            await voice_client.move_to(user_voice_channel)
-            await ctx.send(f"Moved to your voice channel: {user_voice_channel.name}")
-        # else: bot is already in the user's channel
-    else: # Bot is not in a voice channel in this guild
-        try:
-            voice_client = await user_voice_channel.connect()
-            await ctx.send(f"Joined voice channel: {user_voice_channel.name}")
-        except Exception as e:
-            await ctx.send(f"Error joining voice channel: {e}")
-            return
-
-async def fetch_youtube_info(query_or_url: str):
+# This is the new, combined play command that includes Spotify and general URL/search logic
+async def fetch_youtube_info(query_or_url: str): # Ensure this helper is defined before the play command that uses it
     """
     Fetches video information from YouTube or other yt-dlp supported sites.
     Returns a dictionary with 'title', 'stream_url', 'webpage_url', 'duration', 
